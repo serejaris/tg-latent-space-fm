@@ -4,6 +4,9 @@ Telegram bot that posts content from queue.
 Settings:
   BOT_TOKEN   - bot token
   CHANNEL_ID  - channel id or @username
+  OPENROUTER_API_KEY - API key for content generation (optional)
+  OPENROUTER_MODEL - model to use (default: qwen/qwen3-next-80b-a3b-instruct:free)
+  GENERATE_INTERVAL_HOURS - hours between generations (default: 1)
 
 Run:
   python bot.py
@@ -16,7 +19,10 @@ from pathlib import Path
 
 from aiogram import Bot
 
+from content_generator import generate_and_queue
+
 INTERVAL_SECONDS = 60  # 1 minute between posts
+GENERATE_INTERVAL_HOURS = 1  # default, can be overridden by env
 QUEUE_FILE = Path(__file__).parent / "content_queue.json"
 
 
@@ -82,7 +88,8 @@ async def send_post(bot: Bot, channel_id: int | str, text: str) -> bool:
         return False
 
 
-async def run_loop(bot: Bot, channel_id: int | str) -> None:
+async def publish_loop(bot: Bot, channel_id: int | str) -> None:
+    """Publish posts from queue at regular intervals."""
     while True:
         queue = load_queue()
         post = get_next_post(queue)
@@ -102,6 +109,23 @@ async def run_loop(bot: Bot, channel_id: int | str) -> None:
         await asyncio.sleep(INTERVAL_SECONDS)
 
 
+async def generate_loop(
+    api_key: str,
+    model: str,
+    interval_hours: float,
+) -> None:
+    """Generate new posts at regular intervals using OpenRouter."""
+    interval_seconds = interval_hours * 3600
+    print(f"[generator] Will generate every {interval_hours}h")
+
+    while True:
+        await asyncio.sleep(interval_seconds)
+        print("[generator] Generating new post...")
+        success = await generate_and_queue(api_key, model)
+        if not success:
+            print("[generator] Generation failed, will retry next cycle")
+
+
 async def main() -> int:
     load_env_file()
     token = os.getenv("BOT_TOKEN")
@@ -117,8 +141,21 @@ async def main() -> int:
     unpublished = sum(1 for p in queue if not p.get("published", False))
     print(f"[startup] {unpublished} posts in queue")
 
+    # Build list of tasks to run
+    tasks = [publish_loop(bot, channel_id)]
+
+    # Add generation loop if API key is configured
+    openrouter_key = os.getenv("OPENROUTER_API_KEY")
+    if openrouter_key:
+        model = os.getenv("OPENROUTER_MODEL", "qwen/qwen3-next-80b-a3b-instruct:free")
+        interval = float(os.getenv("GENERATE_INTERVAL_HOURS", GENERATE_INTERVAL_HOURS))
+        tasks.append(generate_loop(openrouter_key, model, interval))
+        print(f"[startup] Auto-generation enabled (model: {model})")
+    else:
+        print("[startup] Auto-generation disabled (no OPENROUTER_API_KEY)")
+
     try:
-        await run_loop(bot, channel_id)
+        await asyncio.gather(*tasks)
     finally:
         await bot.session.close()
     return 0
