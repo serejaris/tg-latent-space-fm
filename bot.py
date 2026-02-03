@@ -118,6 +118,14 @@ async def generate_loop(
     interval_seconds = interval_hours * 3600
     print(f"[generator] Will generate every {interval_hours}h")
 
+    # Generate first post immediately on startup
+    print("[generator] Generating first post on startup...")
+    success = await generate_and_queue(api_key, model)
+    if success:
+        print("[generator] First post generated successfully")
+    else:
+        print("[generator] First generation failed, will retry next cycle")
+
     while True:
         await asyncio.sleep(interval_seconds)
         print("[generator] Generating new post...")
